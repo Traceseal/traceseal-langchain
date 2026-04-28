@@ -113,7 +113,39 @@ def _extract_model(serialized: Any, kwargs: dict[str, Any]) -> str:
     return "unknown"
 
 
-def _extract_token_usage(llm_output: Any) -> tuple[int | None, int | None]:
+def _extract_token_usage(response: Any) -> tuple[int | None, int | None]:
+    """Pull (input_tokens, output_tokens) from an LLMResult.
+
+    Modern LangChain chat models (Anthropic, Google, recent
+    `langchain-openai`) attach `usage_metadata` to each `AIMessage` in
+    `response.generations`. Older completion models put a `token_usage`
+    block on `response.llm_output`. We sum per-message metadata first
+    (handles batched calls) and fall back to llm_output when none is
+    present.
+    """
+    input_total: int | None = None
+    output_total: int | None = None
+    generations = getattr(response, "generations", None)
+    if generations:
+        for batch in generations:
+            for gen in batch:
+                message = getattr(gen, "message", None)
+                usage = (
+                    getattr(message, "usage_metadata", None)
+                    if message is not None
+                    else None
+                )
+                if isinstance(usage, dict):
+                    in_t = usage.get("input_tokens")
+                    out_t = usage.get("output_tokens")
+                    if in_t is not None:
+                        input_total = (input_total or 0) + int(in_t)
+                    if out_t is not None:
+                        output_total = (output_total or 0) + int(out_t)
+    if input_total is not None or output_total is not None:
+        return input_total, output_total
+
+    llm_output = getattr(response, "llm_output", None)
     if not isinstance(llm_output, dict):
         return None, None
     usage = (
@@ -167,6 +199,8 @@ class TracesealCallbackHandler(BaseCallbackHandler):
         self._workflow_input_hash = "sha256:empty"
         self._workflow_final_output_hash = "sha256:empty"
         self._root_run_id: UUID | None = None
+        self._root_chain_ok = True
+        self._root_chain_error: str | None = None
 
     # ------------------------------------------------------------------
     # Chain callbacks — capture root-run input/output for workflow scope
@@ -195,6 +229,18 @@ class TracesealCallbackHandler(BaseCallbackHandler):
     ) -> None:
         if run_id == self._root_run_id:
             self._workflow_final_output_hash = sha256_of(_json_safe(outputs))
+
+    def on_chain_error(
+        self,
+        error: BaseException,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> None:
+        if run_id == self._root_run_id:
+            self._root_chain_ok = False
+            self._root_chain_error = str(error)[:200]
 
     # ------------------------------------------------------------------
     # LLM callbacks
@@ -249,9 +295,7 @@ class TracesealCallbackHandler(BaseCallbackHandler):
             return
         wall_time_ms = int((time.monotonic() - pending["t_start"]) * 1000)
         output_obj = _json_safe(response)
-        input_tokens, output_tokens = _extract_token_usage(
-            getattr(response, "llm_output", None)
-        )
+        input_tokens, output_tokens = _extract_token_usage(response)
         record = ModelCallRecord(
             provider=pending["provider"],
             model=pending["model"],
@@ -373,6 +417,87 @@ class TracesealCallbackHandler(BaseCallbackHandler):
         self._step_names.append(f"tool:{pending['tool_name']}")
 
     # ------------------------------------------------------------------
+    # Retriever callbacks — RAG pipelines, emitted as tool-style receipts
+    # with transport="retriever" so verifiers can tell them apart.
+    # ------------------------------------------------------------------
+
+    def on_retriever_start(
+        self,
+        serialized: dict[str, Any] | None,
+        query: str,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> None:
+        name = "unknown"
+        if isinstance(serialized, dict):
+            ident = serialized.get("name") or serialized.get("id")
+            if isinstance(ident, list) and ident:
+                name = str(ident[-1])
+            elif isinstance(ident, str):
+                name = ident
+        self._pending[run_id] = {
+            "kind": "retriever",
+            "started_at": _now_iso(),
+            "t_start": time.monotonic(),
+            "tool_name": name,
+            "input_hash": sha256_of({"query": query}),
+        }
+
+    def on_retriever_end(
+        self,
+        documents: Any,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> None:
+        pending = self._pending.pop(run_id, None)
+        if pending is None:
+            return
+        wall_time_ms = int((time.monotonic() - pending["t_start"]) * 1000)
+        record = ToolCallRecord(
+            tool_name=pending["tool_name"],
+            transport="retriever",
+            input_hash=pending["input_hash"],
+            output_hash=sha256_of({"documents": _json_safe(documents)}),
+            started_at=pending["started_at"],
+            wall_time_ms=wall_time_ms,
+            ok=True,
+        )
+        receipt = sign_tool_call(record, self.operator_key)
+        self.receipts.append(receipt)
+        self._step_names.append(f"retriever:{pending['tool_name']}")
+
+    def on_retriever_error(
+        self,
+        error: BaseException,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> None:
+        pending = self._pending.pop(run_id, None)
+        if pending is None:
+            return
+        wall_time_ms = int((time.monotonic() - pending["t_start"]) * 1000)
+        record = ToolCallRecord(
+            tool_name=pending["tool_name"],
+            transport="retriever",
+            input_hash=pending["input_hash"],
+            output_hash="sha256:empty",
+            started_at=pending["started_at"],
+            wall_time_ms=wall_time_ms,
+            ok=False,
+            exit_code=1,
+            error_message=str(error)[:200],
+        )
+        receipt = sign_tool_call(record, self.operator_key)
+        self.receipts.append(receipt)
+        self._step_names.append(f"retriever:{pending['tool_name']}")
+
+    # ------------------------------------------------------------------
     # Workflow receipt
     # ------------------------------------------------------------------
 
@@ -396,14 +521,20 @@ class TracesealCallbackHandler(BaseCallbackHandler):
             )
             for i, r in enumerate(self.receipts)
         ]
+        steps_ok = all(s.ok for s in steps) if steps else True
+        ok = steps_ok and self._root_chain_ok
+        first_failed = next((s.name for s in steps if not s.ok), "")
+        if not self._root_chain_ok and not first_failed:
+            first_failed = f"chain:{self._root_chain_error or 'error'}"
         record = OrchestrationRecord(
             workflow_name=self.workflow_name,
             workflow_version=self.workflow_version,
             steps=steps,
             started_at=self._workflow_started_at,
             wall_time_ms=wall_time_ms,
-            ok=all(s.ok for s in steps) if steps else True,
+            ok=ok,
             workflow_input_hash=self._workflow_input_hash,
             final_output_hash=self._workflow_final_output_hash,
+            error_step=first_failed,
         )
         return sign_orchestration(record, self.operator_key)
