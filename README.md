@@ -4,7 +4,7 @@
 
 ## What it does
 
-Add a single callback handler to your LangChain chain, agent, or runnable. Every LLM invocation and every tool call produces a signed [Traceseal Execution Receipt](https://traceseal.io/spec) — cryptographic proof of what your agent ran, verifiable by any third party.
+Add a single callback handler to your LangChain chain, agent, or runnable. Every LLM invocation and every tool call produces a signed [Traceseal Execution Receipt](https://traceseal.io/spec): a record of what your agent ran, signed with your operator key and verifiable by any third party. It shows what you recorded; it does not by itself prove the provider returned it (see [What receipts prove](#what-receipts-prove-and-what-they-dont)).
 
 - **No rewrite.** Works with existing LangChain code via the standard callback API.
 - **No vendor lock-in.** Receipts verify with `pip install traceseal-verify` on any machine, no access to your infrastructure.
@@ -84,7 +84,7 @@ See [RECEIPT-SPEC.md §6](https://traceseal.io/spec) for the full trust analysis
 
 ## Why this matters
 
-Compliance officers, auditors, and regulators are starting to ask: *"can you prove what your AI agent actually did?"* Today most answers are "trust our logs." Traceseal receipts are the cryptographic primitive that makes the question answerable in portable, verifiable form — third parties don't need access to your machines or your LangSmith account.
+Compliance officers, auditors, and regulators are starting to ask: *"can you prove what your AI agent actually did?"* Today most answers are "trust our logs." Traceseal receipts make your answer portable and tamper-evident: third parties can check that your record hasn't been altered without access to your machines or your LangSmith account. They still rest on your key, not on an independent observer.
 
 ## License
 
