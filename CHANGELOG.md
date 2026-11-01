@@ -2,7 +2,9 @@
 
 ## [0.2.0]: unreleased
 
-Requires traceseal-observe >= 1.5.
+Requires traceseal-observe >= 1.5 and langchain-core >= 1.1.2. Earlier
+langchain-core releases (0.3.0 to 1.1.1) do not pass `tool_call_id` to
+`on_tool_start`, so the tool-call causal link could not be recorded on them.
 
 ### Added
 - Model receipts record `served_model`, `response_id`, `stop_reason` and

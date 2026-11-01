@@ -21,3 +21,15 @@ jobs:
       - run: pip install "traceseal-observe @ git+https://github.com/Traceseal/traceseal-observe@main"
       - run: pip install -e . pytest
       - run: python -m pytest -q
+
+  minimum-langchain-core:
+    # The declared floor: the oldest langchain-core that forwards tool_call_id.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install "traceseal-observe @ git+https://github.com/Traceseal/traceseal-observe@main"
+      - run: pip install -e . pytest "langchain-core==1.1.2"
+      - run: python -m pytest -q

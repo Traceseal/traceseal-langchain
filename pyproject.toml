@@ -20,14 +20,13 @@ classifiers = [
 ]
 dependencies = [
     "traceseal-observe>=1.5",
-    "langchain-core>=0.3",
+    "langchain-core>=1.1.2",  # first release that passes tool_call_id to on_tool_start
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
-    "langchain>=0.3",
-    "langchain-community>=0.3",
+    "langchain>=1.0",
 ]
 
 [project.urls]

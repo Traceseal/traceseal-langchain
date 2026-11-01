@@ -101,7 +101,7 @@ Every receipt is a JSON file signed with the operator's ed25519 key and conforms
 
 ## Works with
 
-- `langchain-core >= 0.3`, `traceseal-observe >= 1.5`
+- `langchain-core >= 1.1.2` (the first release that passes `tool_call_id` to callbacks, which the causal link needs), `traceseal-observe >= 1.5`
 - LangChain, LangGraph, LangChain Community — any runnable that accepts a `callbacks=` config.
 - LangGraph agents — the handler captures each node's LLM/tool calls and emits a workflow receipt over the whole graph.
 
