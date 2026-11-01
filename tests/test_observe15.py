@@ -84,7 +84,17 @@ def test_errors_are_redacted():
     with pytest.raises(RuntimeError):
         broken.invoke({"url": "https://api.example.com/x"}, config={"callbacks": [handler]})
     message = handler.receipts[0].execution["error_message"]
-    assert "SECRET" not in message and "?<redacted>" in message
+    assert "SECRET" not in message and message.startswith("RuntimeError (sha256:")
+
+
+def test_errors_scrubbed_when_text_opted_in():
+    from traceseal_observe import error_text
+    handler = TracesealCallbackHandler(OperatorKey.generate())
+    with error_text("scrubbed"):
+        with pytest.raises(RuntimeError):
+            broken.invoke({"url": "https://api.example.com/x"}, config={"callbacks": [handler]})
+    message = handler.receipts[0].execution["error_message"]
+    assert "SECRET" not in message and "RuntimeError" in message
 
 
 def test_invalid_context_fails_fast():
