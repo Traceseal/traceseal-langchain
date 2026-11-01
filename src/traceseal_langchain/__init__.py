@@ -20,6 +20,19 @@ Usage:
 
     # handler.receipts  -> list[Receipt] for each model + tool call
     # handler.workflow_receipt()  -> a signed orchestration receipt
+
+With traceseal-observe 1.5+:
+
+  - pass a ReceiptChain signer (chain.signer) as operator_key and every
+    receipt is hash-chained, so a missing one is detectable;
+  - model receipts record the served model, response id, stop reason and
+    the tool calls the model requested;
+  - each tool receipt is causally linked to the model receipt that
+    requested it (via LangChain's tool_call_id), so `traceseal-trace verify`
+    can check every tool call was requested and ran with the requested
+    arguments;
+  - `context=` signs agent identity, principal, authorisation and session
+    into every receipt (see traceseal_observe.context.agent_context).
 """
 
 from __future__ import annotations
@@ -29,6 +42,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
+from contextlib import ExitStack
 from langchain_core.callbacks.base import BaseCallbackHandler
 from traceseal_observe import (
     ModelCallRecord,
@@ -37,14 +51,18 @@ from traceseal_observe import (
     Receipt,
     ToolCallRecord,
     WorkflowStep,
+    _redact_error,
+    agent_context,
+    caused_by,
     sha256_of,
     sign_model_call,
     sign_orchestration,
     sign_tool_call,
 )
+from traceseal_observe.context import MAX_TOOL_CALLS, _call
 
 __all__ = ["TracesealCallbackHandler", "__version__"]
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 
 def _now_iso() -> str:
@@ -113,6 +131,47 @@ def _extract_model(serialized: Any, kwargs: dict[str, Any]) -> str:
     return "unknown"
 
 
+def _first_message(response: Any) -> Any:
+    """The AIMessage of the first generation of an LLMResult, if any."""
+    generations = getattr(response, "generations", None)
+    try:
+        return getattr(generations[0][0], "message", None)
+    except (TypeError, IndexError, KeyError):
+        return None
+
+
+def _response_metadata(response: Any) -> dict[str, str]:
+    """served_model / response_id / stop_reason from the AIMessage, as the
+    provider reported them (strings of 1-256 chars only)."""
+    message = _first_message(response)
+    meta = getattr(message, "response_metadata", None) or {}
+    llm_output = getattr(response, "llm_output", None) or {}
+    out: dict[str, str] = {}
+    candidates = {
+        "served_model": meta.get("model_name") or meta.get("model") or llm_output.get("model_name"),
+        "response_id": meta.get("id") or getattr(message, "id", None),
+        "stop_reason": meta.get("stop_reason") or meta.get("finish_reason"),
+        "system_fingerprint": meta.get("system_fingerprint"),
+    }
+    for key, value in candidates.items():
+        if isinstance(value, str) and 0 < len(value) <= 256:
+            out[key] = value
+    return out
+
+
+def _requested_tool_calls(response: Any) -> list[dict[str, str]]:
+    """Tool calls the model requested ([{id, name, input_hash}]), hashed like
+    the tool receipt's input so the two can be matched."""
+    message = _first_message(response)
+    calls = []
+    for tc in getattr(message, "tool_calls", None) or []:
+        if isinstance(tc, dict):
+            call = _call(tc.get("id"), tc.get("name"), tc.get("args", {}))
+            if call is not None:
+                calls.append(call)
+    return calls[:MAX_TOOL_CALLS]
+
+
 def _extract_token_usage(llm_output: Any) -> tuple[int | None, int | None]:
     if not isinstance(llm_output, dict):
         return None, None
@@ -155,8 +214,22 @@ class TracesealCallbackHandler(BaseCallbackHandler):
         *,
         workflow_name: str | None = None,
         workflow_version: str = "1.0",
+        context: dict[str, Any] | None = None,
     ) -> None:
+        """
+        Args:
+            operator_key: signing key; a ReceiptChain signer chains receipts.
+            context: optional agent_context fields (agent_id, principal,
+                authorization, session_id, ...) signed into every receipt.
+                Given explicitly because LangChain may run callbacks on
+                threads where an outer `with agent_context(...)` is not set.
+        """
         self.operator_key = operator_key
+        self.context = dict(context or {})
+        # Validate the context fields now rather than on the first callback.
+        with agent_context(**self.context):
+            pass
+        self._requested_by: dict[str, Receipt] = {}
         self.workflow_name = workflow_name
         self.workflow_version = workflow_version
         self.receipts: list[Receipt] = []
@@ -167,6 +240,15 @@ class TracesealCallbackHandler(BaseCallbackHandler):
         self._workflow_input_hash = "sha256:empty"
         self._workflow_final_output_hash = "sha256:empty"
         self._root_run_id: UUID | None = None
+
+    def _sign(self, signer, record, *, cause: Receipt | None = None, tool_call_id: str | None = None):
+        with ExitStack() as stack:
+            stack.enter_context(agent_context(**self.context))
+            if cause is not None:
+                stack.enter_context(caused_by(cause, tool_call_id=tool_call_id))
+            elif tool_call_id is not None:
+                stack.enter_context(agent_context(tool_call_id=tool_call_id))
+            return signer(record, self.operator_key)
 
     # ------------------------------------------------------------------
     # Chain callbacks — capture root-run input/output for workflow scope
@@ -252,6 +334,8 @@ class TracesealCallbackHandler(BaseCallbackHandler):
         input_tokens, output_tokens = _extract_token_usage(
             getattr(response, "llm_output", None)
         )
+        meta = _response_metadata(response)
+        calls = _requested_tool_calls(response)
         record = ModelCallRecord(
             provider=pending["provider"],
             model=pending["model"],
@@ -263,8 +347,12 @@ class TracesealCallbackHandler(BaseCallbackHandler):
             ok=True,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            requested_tool_calls=calls or None,
+            **meta,
         )
-        receipt = sign_model_call(record, self.operator_key)
+        receipt = self._sign(sign_model_call, record)
+        for call in calls:
+            self._requested_by[call["id"]] = receipt
         self.receipts.append(receipt)
         self._step_names.append(f"llm:{pending['model']}")
 
@@ -290,9 +378,9 @@ class TracesealCallbackHandler(BaseCallbackHandler):
             wall_time_ms=wall_time_ms,
             ok=False,
             exit_code=1,
-            error_message=str(error)[:200],
+            error_message=_redact_error(f"{type(error).__name__}: {error}"),
         )
-        receipt = sign_model_call(record, self.operator_key)
+        receipt = self._sign(sign_model_call, record)
         self.receipts.append(receipt)
         self._step_names.append(f"llm:{pending['model']}")
 
@@ -312,12 +400,21 @@ class TracesealCallbackHandler(BaseCallbackHandler):
         name = "unknown"
         if isinstance(serialized, dict):
             name = str(serialized.get("name") or serialized.get("id", ["unknown"])[-1])
+        # Hash the structured arguments when LangChain provides them, the same
+        # way the model's requested tool call is hashed, so they can be matched.
+        inputs = kwargs.get("inputs")
+        input_hash = (
+            sha256_of(_json_safe(inputs)) if isinstance(inputs, dict)
+            else sha256_of({"input": input_str})
+        )
+        tool_call_id = kwargs.get("tool_call_id")
         self._pending[run_id] = {
             "kind": "tool",
             "started_at": _now_iso(),
             "t_start": time.monotonic(),
             "tool_name": name,
-            "input_hash": sha256_of({"input": input_str}),
+            "input_hash": input_hash,
+            "tool_call_id": tool_call_id if isinstance(tool_call_id, str) else None,
         }
 
     def on_tool_end(
@@ -341,7 +438,7 @@ class TracesealCallbackHandler(BaseCallbackHandler):
             wall_time_ms=wall_time_ms,
             ok=True,
         )
-        receipt = sign_tool_call(record, self.operator_key)
+        receipt = self._sign_tool(pending, record)
         self.receipts.append(receipt)
         self._step_names.append(f"tool:{pending['tool_name']}")
 
@@ -366,11 +463,16 @@ class TracesealCallbackHandler(BaseCallbackHandler):
             wall_time_ms=wall_time_ms,
             ok=False,
             exit_code=1,
-            error_message=str(error)[:200],
+            error_message=_redact_error(f"{type(error).__name__}: {error}"),
         )
-        receipt = sign_tool_call(record, self.operator_key)
+        receipt = self._sign_tool(pending, record)
         self.receipts.append(receipt)
         self._step_names.append(f"tool:{pending['tool_name']}")
+
+    def _sign_tool(self, pending: dict[str, Any], record: ToolCallRecord) -> Receipt:
+        call_id = pending.get("tool_call_id")
+        cause = self._requested_by.get(call_id) if call_id else None
+        return self._sign(sign_tool_call, record, cause=cause, tool_call_id=call_id)
 
     # ------------------------------------------------------------------
     # Workflow receipt
@@ -406,4 +508,4 @@ class TracesealCallbackHandler(BaseCallbackHandler):
             workflow_input_hash=self._workflow_input_hash,
             final_output_hash=self._workflow_final_output_hash,
         )
-        return sign_orchestration(record, self.operator_key)
+        return self._sign(sign_orchestration, record)

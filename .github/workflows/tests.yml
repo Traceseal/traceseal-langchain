@@ -1,0 +1,23 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      # traceseal-observe 1.5 is merged but not yet on PyPI: install it from
+      # its main branch until it is published.
+      - run: pip install "traceseal-observe @ git+https://github.com/Traceseal/traceseal-observe@main"
+      - run: pip install -e . pytest
+      - run: python -m pytest -q

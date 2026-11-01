@@ -56,19 +56,52 @@ pip install traceseal-verify
 traceseal-verify run.json
 ```
 
+## Completeness, causality and context (traceseal-observe 1.5+)
+
+```python
+from traceseal_observe import OperatorKey, Principal, ReceiptChain
+from traceseal_langchain import TracesealCallbackHandler
+
+chain = ReceiptChain.open("/var/lib/agent/chain", OperatorKey.load_from_file("operator.key"),
+                          "research-assistant")
+handler = TracesealCallbackHandler(
+    chain.signer,                                   # every receipt hash-chained
+    workflow_name="research-assistant",
+    context={"agent_id": "research-assistant", "agent_version": "2.1.0",
+             "principal": Principal.user(user_id, pepper=PEPPER)},
+)
+```
+
+- **Nothing missing**: with a `ReceiptChain` signer, every receipt is
+  hash-chained. `traceseal-verify receipts/*.json` reports any gap.
+- **Which model really answered**: model receipts record the served model,
+  response id, stop reason, and every tool call the model requested.
+- **Why each tool ran**: each tool receipt is linked to the model receipt
+  that requested it, through LangChain's `tool_call_id`, and hashes the
+  structured arguments. `traceseal-trace verify receipts/*.json` reports
+  each tool call as `matched`, `arguments_differ` (your code changed what
+  the model asked for) or `not_requested`, and lists requested calls that
+  never ran.
+- **Who and for whom**: `context=` signs agent identity, a
+  privacy-preserving principal, authorisation and session into every
+  receipt. It is passed explicitly because LangChain may run callbacks on
+  other threads.
+- **No leaked secrets**: error messages are signed with URL query strings
+  (`?api_key=…`) redacted.
+
 ## What the receipts record
 
 | Call type | Captured in the receipt |
 |---|---|
-| LLM | provider, model, input hash, output hash, input/output tokens, wall time, ok/error |
-| Tool | tool name, python transport, input hash, output hash, wall time, ok/error |
+| LLM | provider, requested and served model, response id, stop reason, requested tool calls, input hash, output hash, input/output tokens, wall time, ok/error |
+| Tool | tool name, python transport, hash of the structured arguments, output hash, `tool_call_id` and the model receipt that requested it, wall time, ok/error |
 | Workflow | ordered list of step names + child receipt hashes, start/end times, aggregate ok |
 
 Every receipt is a JSON file signed with the operator's ed25519 key and conforms to [RECEIPT-SPEC.md v1.0](https://traceseal.io/spec).
 
 ## Works with
 
-- `langchain-core >= 0.3`
+- `langchain-core >= 0.3`, `traceseal-observe >= 1.5`
 - LangChain, LangGraph, LangChain Community — any runnable that accepts a `callbacks=` config.
 - LangGraph agents — the handler captures each node's LLM/tool calls and emits a workflow receipt over the whole graph.
 
