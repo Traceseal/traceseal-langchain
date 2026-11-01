@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.2.0]: unreleased
+## [0.2.0] — 2026-11-01
 
 Requires traceseal-observe >= 1.5 and langchain-core >= 1.1.2. Earlier
 langchain-core releases (0.3.0 to 1.1.1) do not pass `tool_call_id` to
