@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.2.1] — 2026-11-01
+
+Requires traceseal-observe >= 1.6.
+
+### Security
+- Errors are recorded as the exception type plus a hash of the message, not
+  the message text, so secrets or personal data in exception text (for
+  example a tool's validation error repeating its input) are no longer
+  signed into receipts. Opt in to scrubbed text with
+  `traceseal_observe.error_text("scrubbed")`.
+- Endpoints are recorded without credentials, query strings, fragments or
+  secret-looking path segments (traceseal-observe 1.6).
+
+### Changed
+- README claims scoped to what the callback sees: no "safe to share",
+  gaps detected between supplied receipts, served model as reported by the
+  provider. No-warranty and legal notice added.
+
 ## [0.2.0] — 2026-11-01
 
 Requires traceseal-observe >= 1.5 and langchain-core >= 1.1.2. Earlier

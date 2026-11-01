@@ -88,7 +88,9 @@ def test_tool_error_is_recorded(operator_key):
     receipt = handler.receipts[0]
     assert receipt.execution["receipt_type"] == "tool"
     assert receipt.execution["ok"] == "false"
-    assert "kaboom" in receipt.execution["error_message"]
+    # observe 1.6 records the exception type plus a hash, never the text
+    assert receipt.execution["error_message"].startswith("RuntimeError (sha256:")
+    assert "kaboom" not in receipt.execution["error_message"]
     assert _verify_receipt(receipt)
 
 

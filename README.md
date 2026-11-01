@@ -1,14 +1,14 @@
 # traceseal-langchain
 
-**Signed execution receipts for every LangChain model and tool call.** Drop in one callback. Hand the receipts to your auditor.
+**Signed execution receipts for the LangChain model and tool calls your callback sees.** Drop in one callback. Hand the receipts to your auditor.
 
 ## What it does
 
-Add a single callback handler to your LangChain chain, agent, or runnable. Every LLM invocation and every tool call produces a signed [Traceseal Execution Receipt](https://traceseal.io/spec): a record of what your agent ran, signed with your operator key and verifiable by any third party. It shows what you recorded; it does not by itself prove the provider returned it (see [What receipts prove](#what-receipts-prove-and-what-they-dont)).
+Add a single callback handler to your LangChain chain, agent, or runnable. Every LLM invocation and tool call that reaches the callback produces a signed [Traceseal Execution Receipt](https://traceseal.io/spec): a record of what your agent ran, signed with your operator key and verifiable by any third party. It shows what you recorded; it does not by itself prove the provider returned it (see [What receipts prove](#what-receipts-prove-and-what-they-dont)).
 
 - **No rewrite.** Works with existing LangChain code via the standard callback API.
 - **No vendor lock-in.** Receipts verify with `pip install traceseal-verify` on any machine, no access to your infrastructure.
-- **Privacy-preserving.** Hashes of inputs/outputs, not the values themselves. Safe to share with auditors.
+- **Data-minimising.** Inputs and outputs are recorded as hashes, not values. Hashes of short or guessable values can be reversed, and receipts carry some clear-text metadata (model and tool names, session ids), so review them before sharing.
 - **Workflow chaining.** Optional: roll every child call into a single signed orchestration receipt.
 
 ## Install
@@ -72,9 +72,11 @@ handler = TracesealCallbackHandler(
 )
 ```
 
-- **Nothing missing**: with a `ReceiptChain` signer, every receipt is
-  hash-chained. `traceseal-verify receipts/*.json` reports any gap.
-- **Which model really answered**: model receipts record the served model,
+- **Gaps show**: with a `ReceiptChain` signer, every receipt is
+  hash-chained. `traceseal-verify receipts/*.json` reports gaps between the
+  receipts you give it; a missing tail is detected only against a
+  checkpoint held by someone other than the operator.
+- **Which model answered, as the provider reported it**: model receipts record the served model,
   response id, stop reason, and every tool call the model requested.
 - **Why each tool ran**: each tool receipt is linked to the model receipt
   that requested it, through LangChain's `tool_call_id`, and hashes the
@@ -83,11 +85,13 @@ handler = TracesealCallbackHandler(
   the model asked for) or `not_requested`, and lists requested calls that
   never ran.
 - **Who and for whom**: `context=` signs agent identity, a
-  privacy-preserving principal, authorisation and session into every
+  pseudonymised principal, authorisation and session into every
   receipt. It is passed explicitly because LangChain may run callbacks on
   other threads.
-- **No leaked secrets**: error messages are signed with URL query strings
-  (`?api_key=…`) redacted.
+- **Errors without their text**: by default an error is recorded as its
+  exception type plus a hash of the message, so secrets or personal data
+  in exception text are not signed into the receipt (traceseal-observe
+  1.6+).
 
 ## What the receipts record
 
@@ -121,4 +125,6 @@ Compliance officers, auditors, and regulators are starting to ask: *"can you pro
 
 ## License
 
-Apache 2.0.
+Apache 2.0, provided "as is", without warranty. Receipts are evidence,
+not a compliance determination or legal advice; see the
+[legal notice](https://github.com/Traceseal/traceseal-observe/blob/main/LEGAL.md).

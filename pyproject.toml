@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "traceseal-langchain"
-version = "0.2.0"
+version = "0.2.1"
 description = "Signed execution receipts for every LangChain model and tool call."
 readme = "README.md"
 license = "Apache-2.0"
@@ -19,7 +19,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "traceseal-observe>=1.5",
+    "traceseal-observe>=1.6",
     "langchain-core>=1.1.2",  # first release that passes tool_call_id to on_tool_start
 ]
 

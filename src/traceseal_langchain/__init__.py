@@ -62,7 +62,7 @@ from traceseal_observe import (
 from traceseal_observe.context import MAX_TOOL_CALLS, _call
 
 __all__ = ["TracesealCallbackHandler", "__version__"]
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 
 def _now_iso() -> str:
